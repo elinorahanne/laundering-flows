@@ -1,0 +1,10 @@
+id,label,amount,x,y,color
+all_money,All money,,-720,300,
+victim_cash,Victim cash,1000,-380,120,
+victim_crypto,Victim crypto,,-380,360,
+crypto_exch,Crypto held by exchanges,,-640,540,
+perp_dirty_cash,Perp dirty cash (mule),500,-10,-60,
+perp_dirty_crypto,Perp dirty crypto,610,-10,320,
+perp_clean_crypto,Perp clean crypto,515,360,240,
+perp_clean_cash,Perp clean cash,970,360,480,
+payloads,Payloads,,760,120,

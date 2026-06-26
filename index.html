@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Money-laundering flows</title>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+  :root { --bg:#0f1116; --panel:#1a1e27; --ink:#e8eaed; --muted:#9aa3b2; --accent:#4f9cff; --loss:#ff6b6b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  #app { display:flex; flex-direction:column; height:100vh; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px;
+    background:var(--panel); border-bottom:1px solid #2a2f3a; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  header .spacer { flex:1; }
+  button, select { background:#262b36; color:var(--ink); border:1px solid #353c49;
+    border-radius:7px; padding:6px 11px; font-size:13px; cursor:pointer; }
+  button:hover { background:#2f3543; }
+  #status { font-size:12px; color:var(--muted); }
+  #status.err { color:var(--loss); }
+  #net { flex:1; }
+  .legend { font-size:12px; color:var(--muted); display:flex; gap:16px; align-items:center; }
+  .legend b { color:var(--ink); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Money-laundering flows</h1>
+    <span class="legend">
+      <span>line width = <b>£ flowing</b></span>
+      <span>label = <b>£ · % lost to costs</b></span>
+    </span>
+    <span class="spacer"></span>
+    <span id="status">starting…</span>
+    <button id="reload">Reload</button>
+    <button id="physics">Freeze layout</button>
+    <button id="fit">Fit</button>
+  </header>
+  <div id="net"></div>
+</div>
+
+<script>
+/* ============================================================================
+   CONFIG — point this at your Google Sheet.
+   1. In your sheet: File ▸ Share ▸ Publish to web  (or just make it
+      "anyone with the link can view").
+   2. Copy the long ID from the sheet URL:
+      docs.google.com/spreadsheets/d/THIS_PART/edit
+   3. Paste it below and set the two tab names.
+   Until you do, the diagram shows the built-in demo numbers.
+   ========================================================================== */
+const SHEET_ID   = "";          // <-- paste your Google Sheet ID here
+const NODES_TAB  = "Nodes";     // tab/sheet name for nodes
+const EDGES_TAB  = "Edges";     // tab/sheet name for edges
+const REFRESH_MS = 15000;       // auto-refresh interval (ms)
+
+/* ---- demo data (used when SHEET_ID is blank, mirrors the whiteboard) ---- */
+const DEMO = {
+  nodes: [
+    { id:"all_money",        label:"All money",                amount:"",    x:-720, y:300 },
+    { id:"victim_cash",      label:"Victim cash",              amount:1000,  x:-380, y:120 },
+    { id:"victim_crypto",    label:"Victim crypto",            amount:"",    x:-380, y:360 },
+    { id:"crypto_exch",      label:"Crypto held by exchanges", amount:"",    x:-640, y:540 },
+    { id:"perp_dirty_cash",  label:"Perp dirty cash (mule)",   amount:500,   x:-10,  y:-60 },
+    { id:"perp_dirty_crypto",label:"Perp dirty crypto",        amount:610,   x:-10,  y:320 },
+    { id:"perp_clean_crypto",label:"Perp clean crypto",        amount:515,   x:360,  y:240 },
+    { id:"perp_clean_cash",  label:"Perp clean cash",          amount:970,   x:360,  y:480 },
+    { id:"payloads",         label:"Payloads",                 amount:"",    x:760,  y:120 }
+  ],
+  edges: [
+    { from:"all_money",        to:"victim_cash",       amount:1000, cost:"0",     step:"" },
+    { from:"all_money",        to:"crypto_exch",       amount:600,  cost:"0",     step:"" },
+    { from:"crypto_exch",      to:"victim_crypto",     amount:600,  cost:"0",     step:"" },
+    { from:"victim_cash",      to:"perp_dirty_cash",   amount:500,  cost:"1/2",   step:"0" },
+    { from:"victim_cash",      to:"perp_dirty_crypto", amount:500,  cost:"5/100", step:"1" },
+    { from:"victim_crypto",    to:"perp_dirty_crypto", amount:610,  cost:"1/100", step:"2" },
+    { from:"perp_dirty_crypto",to:"perp_clean_crypto", amount:515,  cost:"1/100", step:"4" },
+    { from:"perp_dirty_cash",  to:"perp_clean_crypto", amount:480,  cost:"1/100", step:"5" },
+    { from:"perp_clean_crypto",to:"payloads",          amount:412,  cost:"4/5",   step:"3" },
+    { from:"perp_clean_crypto",to:"perp_clean_cash",   amount:970,  cost:"19/20", step:"6" },
+    { from:"perp_clean_cash",  to:"payloads",          amount:920,  cost:"1/20",  step:"7" }
+  ]
+};
+
+/* ----------------------------- helpers --------------------------------- */
+const statusEl = document.getElementById("status");
+function setStatus(msg, err=false){ statusEl.textContent = msg; statusEl.className = err ? "err" : ""; }
+
+// parse cost cell: accepts "1/20", "0.05", "5%", 0.05  -> fraction 0..1
+function parseCost(v){
+  if (v === null || v === undefined || v === "") return 0;
+  let s = String(v).trim();
+  if (s.endsWith("%")) return clamp01(parseFloat(s)/100);
+  if (s.includes("/")) { const [a,b] = s.split("/").map(Number); return b ? clamp01(a/b) : 0; }
+  const n = parseFloat(s);
+  return clamp01(n > 1 ? n/100 : n);   // bare number >1 treated as percent
+}
+function clamp01(n){ return isNaN(n) ? 0 : Math.max(0, Math.min(1, n)); }
+function num(v){ const n = parseFloat(String(v).replace(/[, £$]/g,"")); return isNaN(n) ? 0 : n; }
+function money(n){ return "£" + Math.round(n).toLocaleString(); }
+
+// minimal CSV parser (handles quotes, commas, newlines)
+function parseCSV(text){
+  const rows = []; let row = [], cell = "", q = false;
+  for (let i=0;i<text.length;i++){
+    const c = text[i];
+    if (q){
+      if (c === '"'){ if (text[i+1] === '"'){ cell+='"'; i++; } else q=false; }
+      else cell += c;
+    } else {
+      if (c === '"') q = true;
+      else if (c === ',') { row.push(cell); cell=""; }
+      else if (c === '\n'){ row.push(cell); rows.push(row); row=[]; cell=""; }
+      else if (c === '\r'){ /* skip */ }
+      else cell += c;
+    }
+  }
+  if (cell.length || row.length){ row.push(cell); rows.push(row); }
+  return rows;
+}
+// CSV rows -> array of objects keyed by header (lower-cased, trimmed)
+function toObjects(rows){
+  if (!rows.length) return [];
+  const head = rows[0].map(h => h.trim().toLowerCase());
+  return rows.slice(1)
+    .filter(r => r.some(c => c.trim() !== ""))
+    .map(r => Object.fromEntries(head.map((h,i)=>[h, (r[i]??"").trim()])));
+}
+async function fetchTab(tab){
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}`;
+  const res = await fetch(url, { cache:"no-store" });
+  if (!res.ok) throw new Error(`${tab}: HTTP ${res.status}`);
+  return toObjects(parseCSV(await res.text()));
+}
+
+/* --------------------------- build datasets ---------------------------- */
+function buildGraph(nodesRaw, edgesRaw){
+  const nodes = nodesRaw.map(n => {
+    const amount = n.amount === "" || n.amount === undefined ? null : num(n.amount);
+    const label = (n.label || n.id) + (amount !== null ? `\n${money(amount)}` : "");
+    const node = { id:String(n.id).trim(), label };
+    if (n.x !== "" && n.x !== undefined && !isNaN(parseFloat(n.x))) node.x = parseFloat(n.x);
+    if (n.y !== "" && n.y !== undefined && !isNaN(parseFloat(n.y))) node.y = parseFloat(n.y);
+    if (n.color) node.color = n.color;
+    return node;
+  });
+
+  const amounts = edgesRaw.map(e => num(e.amount)).filter(a => a > 0);
+  const maxAmt = amounts.length ? Math.max(...amounts) : 1;
+
+  const edges = edgesRaw.map(e => {
+    const amount = num(e.amount);
+    const cost   = parseCost(e.cost);
+    const pct    = Math.round(cost * 100);
+    const step   = (e.step ?? "").toString().trim();
+    const width  = 1 + 11 * Math.sqrt(amount / maxAmt);   // sqrt scale for readability
+    // colour: greener when cheap, redder when costly
+    const r = Math.round(80 + cost * 175), g = Math.round(190 - cost * 150);
+    const parts = [];
+    if (step) parts.push(`(${step})`);
+    if (amount) parts.push(money(amount));
+    if (pct)    parts.push(`−${pct}%`);
+    return {
+      from:String(e.from).trim(), to:String(e.to).trim(),
+      label: parts.join("  "), width,
+      color:{ color:`rgb(${r},${g},90)`, highlight:`rgb(${r},${g},90)` },
+      arrows:"to", smooth:{ type:"curvedCW", roundness:0.18 },
+      font:{ color:"#e8eaed", size:14, strokeWidth:4, strokeColor:"#0f1116", align:"middle" }
+    };
+  });
+  return { nodes, edges };
+}
+
+/* ----------------------------- network --------------------------------- */
+const data = { nodes:new vis.DataSet([]), edges:new vis.DataSet([]) };
+const network = new vis.Network(document.getElementById("net"), data, {
+  nodes:{ shape:"box", margin:10, color:{ background:"#222a38", border:"#4f9cff" },
+          font:{ color:"#e8eaed", size:15, multi:false }, borderWidth:2, shadow:true },
+  edges:{ font:{ multi:false } },
+  physics:{ enabled:true, barnesHut:{ gravitationalConstant:-9000, springLength:170 },
+            stabilization:{ iterations:200 } },
+  interaction:{ hover:true, dragNodes:true, tooltipDelay:120 }
+});
+
+let firstLoad = true;
+function render(graph){
+  data.nodes.update(graph.nodes);
+  data.edges.clear(); data.edges.add(graph.edges);
+  // drop nodes no longer present
+  const keep = new Set(graph.nodes.map(n=>n.id));
+  data.nodes.getIds().forEach(id => { if (!keep.has(id)) data.nodes.remove(id); });
+  if (firstLoad){ network.once("stabilizationIterationsDone", ()=>network.fit({animation:true})); firstLoad = false; }
+}
+
+async function load(){
+  if (!SHEET_ID){
+    render(buildGraph(DEMO.nodes, DEMO.edges));
+    setStatus("demo data — set SHEET_ID in index.html to go live");
+    return;
+  }
+  try {
+    setStatus("loading from Google Sheet…");
+    const [nodesRaw, edgesRaw] = await Promise.all([ fetchTab(NODES_TAB), fetchTab(EDGES_TAB) ]);
+    render(buildGraph(nodesRaw, edgesRaw));
+    setStatus("updated " + new Date().toLocaleTimeString());
+  } catch (err){
+    setStatus("error: " + err.message + " (showing last good data)", true);
+    console.error(err);
+  }
+}
+
+/* ----------------------------- controls -------------------------------- */
+let physicsOn = true;
+document.getElementById("physics").onclick = (e)=>{
+  physicsOn = !physicsOn;
+  network.setOptions({ physics:{ enabled:physicsOn } });
+  e.target.textContent = physicsOn ? "Freeze layout" : "Unfreeze layout";
+};
+document.getElementById("reload").onclick = load;
+document.getElementById("fit").onclick = ()=>network.fit({animation:true});
+
+load();
+setInterval(load, REFRESH_MS);
+</script>
+</body>
+</html>

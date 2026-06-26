@@ -1,0 +1,12 @@
+from,to,amount,cost,step
+all_money,victim_cash,1000,0,
+all_money,crypto_exch,600,0,
+crypto_exch,victim_crypto,600,0,
+victim_cash,perp_dirty_cash,500,1/2,0
+victim_cash,perp_dirty_crypto,500,5/100,1
+victim_crypto,perp_dirty_crypto,610,1/100,2
+perp_dirty_crypto,perp_clean_crypto,515,1/100,4
+perp_dirty_cash,perp_clean_crypto,480,1/100,5
+perp_clean_crypto,payloads,412,4/5,3
+perp_clean_crypto,perp_clean_cash,970,19/20,6
+perp_clean_cash,payloads,920,1/20,7
