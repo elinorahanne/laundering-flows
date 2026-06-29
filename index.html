@@ -188,12 +188,27 @@ const network = new vis.Network(document.getElementById("net"), data, {
 
 let firstLoad = true;
 function render(graph){
-  data.nodes.update(graph.nodes);
-  data.edges.clear(); data.edges.add(graph.edges);
-  // drop nodes no longer present
   const keep = new Set(graph.nodes.map(n=>n.id));
+  // drop edges that point at a missing node — these otherwise blank the canvas
+  const dropped = graph.edges.filter(e => !keep.has(e.from) || !keep.has(e.to));
+  const goodEdges = graph.edges.filter(e => keep.has(e.from) && keep.has(e.to));
+  if (dropped.length){
+    const bad = [...new Set(dropped.flatMap(e => [e.from,e.to].filter(id=>!keep.has(id))))];
+    setStatus("⚠ ignored edges with unknown node id(s): " + bad.join(", "), true);
+    console.warn("Edges referencing missing nodes:", dropped);
+  }
+  data.nodes.update(graph.nodes);
+  data.edges.clear(); data.edges.add(goodEdges);
+  // drop nodes no longer present
   data.nodes.getIds().forEach(id => { if (!keep.has(id)) data.nodes.remove(id); });
-  if (firstLoad){ network.once("stabilizationIterationsDone", ()=>network.fit({animation:true})); firstLoad = false; }
+  if (firstLoad){
+    firstLoad = false;
+    // fit reliably regardless of whether the stabilization event fires
+    network.once("stabilizationIterationsDone", ()=>network.fit({animation:true}));
+    setTimeout(()=>network.fit({animation:true}), 400);
+    setTimeout(()=>network.fit({animation:true}), 1500);
+  }
+  return dropped.length;
 }
 
 async function load(){
@@ -205,8 +220,8 @@ async function load(){
   try {
     setStatus("loading from Google Sheet…");
     const [nodesRaw, edgesRaw] = await Promise.all([ fetchTab(NODES_TAB), fetchTab(EDGES_TAB) ]);
-    render(buildGraph(nodesRaw, edgesRaw));
-    setStatus("updated " + new Date().toLocaleTimeString());
+    const dropped = render(buildGraph(nodesRaw, edgesRaw));
+    if (!dropped) setStatus("updated " + new Date().toLocaleTimeString());
   } catch (err){
     setStatus("error: " + err.message + " (showing last good data)", true);
     console.error(err);
