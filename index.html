@@ -113,38 +113,34 @@ function clamp01(n){ return isNaN(n) ? 0 : Math.max(0, Math.min(1, n)); }
 function num(v){ const n = parseFloat(String(v).replace(/[, £$]/g,"")); return isNaN(n) ? 0 : n; }
 function money(n){ return "£" + Math.round(n).toLocaleString(); }
 
-// minimal CSV parser (handles quotes, commas, newlines)
-function parseCSV(text){
-  const rows = []; let row = [], cell = "", q = false;
-  for (let i=0;i<text.length;i++){
-    const c = text[i];
-    if (q){
-      if (c === '"'){ if (text[i+1] === '"'){ cell+='"'; i++; } else q=false; }
-      else cell += c;
-    } else {
-      if (c === '"') q = true;
-      else if (c === ',') { row.push(cell); cell=""; }
-      else if (c === '\n'){ row.push(cell); rows.push(row); row=[]; cell=""; }
-      else if (c === '\r'){ /* skip */ }
-      else cell += c;
-    }
-  }
-  if (cell.length || row.length){ row.push(cell); rows.push(row); }
-  return rows;
-}
-// CSV rows -> array of objects keyed by header (lower-cased, trimmed)
-function toObjects(rows){
-  if (!rows.length) return [];
-  const head = rows[0].map(h => h.trim().toLowerCase());
-  return rows.slice(1)
-    .filter(r => r.some(c => c.trim() !== ""))
-    .map(r => Object.fromEntries(head.map((h,i)=>[h, (r[i]??"").trim()])));
-}
-async function fetchTab(tab){
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&sheet=${encodeURIComponent(tab)}`;
-  const res = await fetch(url, { cache:"no-store" });
-  if (!res.ok) throw new Error(`${tab}: HTTP ${res.status}`);
-  return toObjects(parseCSV(await res.text()));
+// Fetch one tab via the gviz JSON endpoint using JSONP (a <script> tag).
+// JSONP is used on purpose: it (a) targets a tab by NAME, and (b) bypasses
+// CORS, so the same code works from a local file:// AND from the live site.
+// Returns an array of row objects keyed by the header label (lower-cased).
+function fetchTab(tab){
+  return new Promise((resolve, reject) => {
+    const cb = "__gv_" + Math.random().toString(36).slice(2);
+    const script = document.createElement("script");
+    const timer = setTimeout(() => { cleanup(); reject(new Error(tab + ": request timed out")); }, 12000);
+    function cleanup(){ clearTimeout(timer); delete window[cb]; script.remove(); }
+    window[cb] = (resp) => {
+      cleanup();
+      try {
+        if (!resp || !resp.table) throw new Error(tab + ": no data (check tab name & sharing)");
+        const head = resp.table.cols.map(c => (c.label || c.id || "").trim().toLowerCase());
+        const rows = resp.table.rows.map(r => {
+          const o = {};
+          head.forEach((h, i) => { const cell = r.c[i]; o[h] = (cell && cell.v != null) ? cell.v : ""; });
+          return o;
+        }).filter(o => Object.values(o).some(v => String(v).trim() !== ""));
+        resolve(rows);
+      } catch (e) { reject(e); }
+    };
+    script.onerror = () => { cleanup(); reject(new Error(tab + ": failed to load (sheet not shared publicly?)")); };
+    script.src = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq` +
+                 `?tqx=out:json;responseHandler:${cb}&headers=1&sheet=${encodeURIComponent(tab)}`;
+    document.head.appendChild(script);
+  });
 }
 
 /* --------------------------- build datasets ---------------------------- */
