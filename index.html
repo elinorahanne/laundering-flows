@@ -131,7 +131,7 @@ function toObjects(rows){
     .map(r => Object.fromEntries(head.map((h,i)=>[h, (r[i]??"").trim()])));
 }
 async function fetchTab(tab){
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}`;
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&sheet=${encodeURIComponent(tab)}`;
   const res = await fetch(url, { cache:"no-store" });
   if (!res.ok) throw new Error(`${tab}: HTTP ${res.status}`);
   return toObjects(parseCSV(await res.text()));
