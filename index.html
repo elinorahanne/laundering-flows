@@ -20,7 +20,7 @@
   button:hover { background:#2f3543; }
   #status { font-size:12px; color:var(--muted); }
   #status.err { color:var(--loss); }
-  #net { flex:1; }
+  #net { flex:1; min-height:0; height:calc(100vh - 54px); }
   .legend { font-size:12px; color:var(--muted); display:flex; gap:16px; align-items:center; }
   .legend b { color:var(--ink); }
   a { color:var(--accent); }
@@ -44,6 +44,16 @@
 </div>
 
 <script>
+// surface any uncaught error on-screen so we never get a silent blank page
+window.addEventListener("error", e => {
+  const s = document.getElementById("status");
+  if (s){ s.textContent = "JS error: " + (e.message || e.error); s.className = "err"; }
+});
+if (typeof vis === "undefined"){
+  document.getElementById("status").textContent =
+    "vis-network library failed to load (offline or CDN blocked?)";
+  document.getElementById("status").className = "err";
+}
 /* ============================================================================
    CONFIG — point this at your Google Sheet.
    1. In your sheet: File ▸ Share ▸ Publish to web  (or just make it
@@ -220,8 +230,9 @@ async function load(){
   try {
     setStatus("loading from Google Sheet…");
     const [nodesRaw, edgesRaw] = await Promise.all([ fetchTab(NODES_TAB), fetchTab(EDGES_TAB) ]);
-    const dropped = render(buildGraph(nodesRaw, edgesRaw));
-    if (!dropped) setStatus("updated " + new Date().toLocaleTimeString());
+    const graph = buildGraph(nodesRaw, edgesRaw);
+    const dropped = render(graph);
+    if (!dropped) setStatus(`updated ${new Date().toLocaleTimeString()} · ${graph.nodes.length} nodes, ${graph.edges.length} edges`);
   } catch (err){
     setStatus("error: " + err.message + " (showing last good data)", true);
     console.error(err);
